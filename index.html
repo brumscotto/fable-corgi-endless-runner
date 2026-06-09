@@ -415,6 +415,52 @@ function makeGate() {
   grp.add(cap);
   return grp;
 }
+/* ---- action hint sprites (JUMP / SPLOOT tags over obstacles) ---- */
+function makeHintTexture(label, dir, color) {
+  const c = document.createElement("canvas");
+  c.width = 256; c.height = 128;
+  const x = c.getContext("2d");
+  // pill background
+  x.fillStyle = "rgba(26,16,51,0.8)";
+  x.strokeStyle = color; x.lineWidth = 6;
+  const r = 48;
+  x.beginPath();
+  x.moveTo(r + 6, 6);
+  x.arcTo(250, 6, 250, 122, r);
+  x.arcTo(250, 122, 6, 122, r);
+  x.arcTo(6, 122, 6, 6, r);
+  x.arcTo(6, 6, 250, 6, r);
+  x.closePath();
+  x.fill(); x.stroke();
+  // arrow
+  x.fillStyle = color;
+  if (dir === "up") {
+    x.beginPath(); x.moveTo(56, 26); x.lineTo(30, 60); x.lineTo(82, 60); x.closePath(); x.fill();
+    x.fillRect(46, 60, 20, 40);
+  } else {
+    x.beginPath(); x.moveTo(56, 102); x.lineTo(30, 68); x.lineTo(82, 68); x.closePath(); x.fill();
+    x.fillRect(46, 28, 20, 40);
+  }
+  // label
+  x.fillStyle = "#fff7e8";
+  x.font = "900 38px 'Trebuchet MS', sans-serif";
+  x.textBaseline = "middle";
+  x.fillText(label, 98, 66);
+  return new THREE.CanvasTexture(c);
+}
+const jumpTex = makeHintTexture("JUMP", "up", "#ffd966");
+const splootTex = makeHintTexture("SPLOOT", "down", "#ff9fc0");
+function makeHint(type) {
+  const mat = new THREE.SpriteMaterial({
+    map: type === "rock" ? jumpTex : splootTex,
+    transparent: true, opacity: 0, depthTest: false,
+  });
+  const s = new THREE.Sprite(mat);
+  s.scale.set(2.1, 1.05, 1);
+  s.renderOrder = 5;
+  return s;
+}
+
 function makeLantern() {
   const grp = new THREE.Group();
   const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.1, 0.18), M.wood);
@@ -445,6 +491,9 @@ function makeTree() {
 /* ================= game state ================= */
 const ST = { MENU: 0, PLAY: 1, DEAD: 2 };
 let state = ST.MENU;
+// hints retire per-type once the player has passed enough of them (persists across runs this session)
+const HINTS_PER_TYPE = 5;
+const hintsSeen = { rock: 0, bar: 0 };
 let speed, dist, treats, best = 0;
 let obstacles = [], bones = [], decos = [];
 let spawnZ, nextDecoZ, nextGateZ, runPhase, shakeT;
@@ -485,8 +534,15 @@ function spawnWave() {
     placed.add(lane);
     const mesh = type === "rock" ? makeRock() : makeBar();
     mesh.position.set(lane * LANE_X, 0, spawnZ);
+    let hint = null, hintY = 0;
+    if (hintsSeen[type] < HINTS_PER_TYPE) {
+      hint = makeHint(type);
+      hintY = type === "rock" ? 2.4 : 2.85;
+      hint.position.set(0, hintY, 0);
+      mesh.add(hint);
+    }
     scene.add(mesh);
-    obstacles.push({ mesh, lane, type, z: spawnZ });
+    obstacles.push({ mesh, lane, type, z: spawnZ, hint, hintY });
   }
   if (roll < 0.3) put(rndLane(), "rock");
   else if (roll < 0.5) put(rndLane(), "bar");
@@ -627,10 +683,12 @@ muteBtn.addEventListener("mousedown", toggleMute);
 muteBtn.addEventListener("touchend", toggleMute);
 
 /* ================= input ================= */
-function tryLane(d) { if (state !== ST.PLAY || player.dead) return; player.lane = THREE.MathUtils.clamp(player.lane + d, -1, 1); }
-function tryJump() { if (state !== ST.PLAY || player.dead) return; if (player.y === 0) { player.vy = 11.5; player.sliding = 0; sfx.jump(); } }
+let inputLockUntil = 0;
+const inputLocked = () => performance.now() < inputLockUntil;
+function tryLane(d) { if (state !== ST.PLAY || player.dead || inputLocked()) return; player.lane = THREE.MathUtils.clamp(player.lane + d, -1, 1); }
+function tryJump() { if (state !== ST.PLAY || player.dead || inputLocked()) return; if (player.y === 0) { player.vy = 11.5; player.sliding = 0; sfx.jump(); } }
 function trySlide() {
-  if (state !== ST.PLAY || player.dead) return;
+  if (state !== ST.PLAY || player.dead || inputLocked()) return;
   if (player.y > 0) player.vy = -24;
   if (player.sliding <= 0) sfx.sploot();
   player.sliding = 0.62;
@@ -669,6 +727,7 @@ function handleStartTap() {
   initAudio();
   reset();
   state = ST.PLAY;
+  inputLockUntil = performance.now() + 450; // swallow ghost events from the start tap
   startMusic();
   overlay.classList.add("hidden");
   hud.classList.remove("hidden");
@@ -715,7 +774,13 @@ function update(dt) {
   moveList(obstacles); moveList(bones); moveList(decos);
   spawnZ += dz; nextDecoZ += dz; nextGateZ += dz;
 
-  obstacles = obstacles.filter(o => (o.z < 12) || (scene.remove(o.mesh), false));
+  obstacles = obstacles.filter(o => {
+    if (o.z < 12) return true;
+    hintsSeen[o.type]++; // survived past it — one step closer to retiring this hint
+    scene.remove(o.mesh);
+    if (o.hint) o.hint.material.dispose();
+    return false;
+  });
   bones = bones.filter(b => (!b.got && b.z < 12) || (scene.remove(b.mesh), false));
   decos = decos.filter(d => (d.z < 14) || (scene.remove(d.mesh), false));
 
@@ -735,6 +800,17 @@ function update(dt) {
     b.mesh.position.y = 1.0 + Math.sin(performance.now() / 220 + b.spin) * 0.12;
   }
 
+  // action hints: fade in as the obstacle approaches, fade out before impact
+  const hNow = performance.now() / 1000;
+  for (const o of obstacles) {
+    if (!o.hint) continue;
+    const d = -o.z; // distance ahead of the player
+    const fadeIn = Math.max(0, Math.min(1, (34 - d) / 8));
+    const fadeOut = Math.max(0, Math.min(1, (d - 2.5) / 4));
+    o.hint.material.opacity = fadeIn * fadeOut;
+    o.hint.position.y = o.hintY + Math.sin(hNow * 3.5 + o.lane * 2) * 0.1;
+  }
+
   // collisions (player at z = 0)
   if (!player.dead) {
     for (const o of obstacles) {
@@ -748,7 +824,7 @@ function update(dt) {
       if (b.got || Math.abs(b.z) > 1.1) continue;
       if (Math.abs(player.x - b.lane) < 0.5 && player.y < 1.4) {
         b.got = true; treats++;
-        chompT = 0.4;
+        chompT = 0.55;
         sfx.bone();
         scene.remove(b.mesh);
       }
@@ -858,10 +934,15 @@ function animateCorgi(dt, idle) {
   // chin stays low but the head tips up to see ahead
   corgi.head.rotation.x = mix(0, -0.22);
 
-  // gobble: two quick chomps after grabbing a bone
+  // gobble: head swings to profile so the chomp is visible from behind
   if (chompT > 0) chompT -= dt;
-  const chomp = chompT > 0 ? Math.abs(Math.sin((1 - chompT / 0.4) * Math.PI * 2)) : 0;
-  corgi.jaw.rotation.x = -0.7 * chomp;
+  const CHOMP_DUR = 0.55;
+  const prog = chompT > 0 ? 1 - chompT / CHOMP_DUR : 0;
+  const turn = chompT > 0 ? Math.sin(prog * Math.PI) : 0;   // swing out and back
+  const chomp = chompT > 0 ? Math.abs(Math.sin(prog * Math.PI * 3)) : 0; // three quick chomps
+  corgi.head.rotation.y = 0.85 * turn;                      // profile view
+  corgi.head.rotation.x += -0.25 * turn;                    // toss the bone up a bit
+  corgi.jaw.rotation.x = -0.75 * chomp * (0.4 + 0.6 * turn);
 
   // tail wiggle + head bob
   corgi.tail.position.x = Math.sin(runPhase * 1.8) * 0.12;
