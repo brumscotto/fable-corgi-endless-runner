@@ -1,0 +1,921 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Corgi Run 3D</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    background: #241447; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    font-family: "Avenir Next", "Trebuchet MS", system-ui, sans-serif;
+  }
+  canvas { display: block; }
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between;
+    padding: max(14px, env(safe-area-inset-top)) 18px 0;
+    pointer-events: none; color: #fff7e8;
+  }
+  .score-label { font-size: 10px; letter-spacing: 2.5px; text-transform: uppercase; opacity: .75; }
+  .score-num { font-size: 32px; font-weight: 800; text-shadow: 0 2px 0 rgba(40,10,60,.45); font-variant-numeric: tabular-nums; }
+  .treat-block { text-align: right; }
+  .treat-num { font-size: 22px; font-weight: 800; text-shadow: 0 2px 0 rgba(40,10,60,.45); font-variant-numeric: tabular-nums; }
+  #overlay {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    color: #fff7e8; padding: 24px;
+    background: radial-gradient(ellipse at 50% 35%, rgba(26,16,51,.25), rgba(26,16,51,.8));
+    transition: opacity .25s ease;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+  .title {
+    font-size: clamp(44px, 13vw, 84px); font-weight: 900; line-height: .95;
+    color: #ffb347; text-shadow: 0 4px 0 #c1431f, 0 8px 24px rgba(0,0,0,.45);
+  }
+  .title small { display: block; font-size: .32em; letter-spacing: 8px; color: #fff7e8; text-shadow: 0 2px 0 rgba(40,10,60,.5); margin-bottom: 6px; font-weight: 700; }
+  .subtitle { margin-top: 14px; font-size: 15px; opacity: .9; max-width: 300px; line-height: 1.5; }
+  .controls-hint { margin-top: 22px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 18px; font-size: 13px; opacity: .85; }
+  .controls-hint b { color: #ffb347; }
+  .tap-start {
+    margin-top: 34px; font-size: 16px; font-weight: 800; letter-spacing: 3px;
+    text-transform: uppercase; color: #1a1033; background: #ffb347;
+    padding: 14px 34px; border-radius: 40px;
+    box-shadow: 0 5px 0 #c1431f, 0 10px 26px rgba(0,0,0,.4);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { transform: scale(1);} 50% { transform: scale(1.05);} }
+  @media (prefers-reduced-motion: reduce) { .tap-start { animation: none; } }
+  .final-score { font-size: 64px; font-weight: 900; color: #ffb347; text-shadow: 0 4px 0 #c1431f; font-variant-numeric: tabular-nums; }
+  .best { margin-top: 8px; font-size: 14px; letter-spacing: 2px; text-transform: uppercase; opacity: .85; }
+  .dead-msg { font-size: 24px; font-weight: 800; margin-bottom: 18px; }
+  #hud.hidden { display: none; }
+  #muteBtn {
+    position: fixed; right: 14px; bottom: max(14px, env(safe-area-inset-bottom));
+    z-index: 10; width: 46px; height: 46px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; background: rgba(26,16,51,.55); color: #fff7e8;
+    border: 2px solid rgba(255,247,232,.35); cursor: pointer;
+  }
+  #muteBtn.muted { opacity: .5; }
+</style>
+</head>
+<body>
+<div id="hud" class="hidden">
+  <div>
+    <div class="score-label">Score</div>
+    <div class="score-num" id="scoreNum">0</div>
+  </div>
+  <div class="treat-block">
+    <div class="score-label">🦴 = 50 pts</div>
+    <div class="treat-num" id="treatNum">🦴 0</div>
+  </div>
+</div>
+
+<div id="muteBtn" title="Toggle sound">🔊</div>
+
+<div id="overlay">
+  <div id="menuContent">
+    <div class="title"><small>SHRINE&nbsp;DASH</small>CORGI<br>RUN&nbsp;3D</div>
+    <div class="subtitle">A very good dog. A very long path. Infinite torii gates. Now with depth.</div>
+    <div class="controls-hint">
+      <span>⬅️➡️ <b>swipe</b> lanes</span>
+      <span>⬆️ <b>swipe up</b> jump</span>
+      <span>⬇️ <b>swipe down</b> sploot</span>
+      <span>⌨️ <b>arrows</b> on desktop</span>
+    </div>
+    <div class="tap-start">Tap to run</div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(() => {
+"use strict";
+
+/* ================= renderer / scene ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x3a1c5e);
+scene.fog = new THREE.Fog(0x3a1c5e, 30, 95);
+
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(0, 4.6, 7.5);
+camera.lookAt(0, 1.2, -4);
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+/* ================= lights & sky ================= */
+scene.add(new THREE.HemisphereLight(0x9a6bd1, 0x2e4a3a, 0.85));
+const sun = new THREE.DirectionalLight(0xffd9a0, 1.1);
+sun.position.set(-6, 14, -8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.left = -14; sun.shadow.camera.right = 14;
+sun.shadow.camera.top = 20; sun.shadow.camera.bottom = -30;
+sun.shadow.camera.far = 60;
+scene.add(sun);
+
+// big setting sun on the horizon
+const sunBall = new THREE.Mesh(
+  new THREE.SphereGeometry(7, 24, 24),
+  new THREE.MeshBasicMaterial({ color: 0xffb347, fog: false })
+);
+sunBall.position.set(0, 6, -130);
+scene.add(sunBall);
+const sunGlow = new THREE.Mesh(
+  new THREE.SphereGeometry(11, 24, 24),
+  new THREE.MeshBasicMaterial({ color: 0xff7a3c, transparent: true, opacity: 0.28, fog: false })
+);
+sunGlow.position.copy(sunBall.position);
+scene.add(sunGlow);
+
+// gradient sky dome (vertex-colored, inside-out sphere)
+{
+  const geo = new THREE.SphereGeometry(160, 16, 12);
+  const colTop = new THREE.Color(0x241447), colBot = new THREE.Color(0xc1431f);
+  const colors = [];
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i) / 160;
+    const c = colBot.clone().lerp(colTop, THREE.MathUtils.clamp(y * 1.4 + 0.35, 0, 1));
+    colors.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  const sky = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false }));
+  scene.add(sky);
+}
+
+/* ================= materials ================= */
+const M = {
+  orange: new THREE.MeshLambertMaterial({ color: 0xe8923f }),
+  orangeDark: new THREE.MeshLambertMaterial({ color: 0xc9742a }),
+  cream: new THREE.MeshLambertMaterial({ color: 0xfff3dc }),
+  nose: new THREE.MeshLambertMaterial({ color: 0x33222a }),
+  tongue: new THREE.MeshLambertMaterial({ color: 0xe07a90 }),
+  path: new THREE.MeshLambertMaterial({ color: 0xa8674b }),
+  pathEdge: new THREE.MeshLambertMaterial({ color: 0x5b3328 }),
+  grass: new THREE.MeshLambertMaterial({ color: 0x2e4a3a }),
+  rock: new THREE.MeshLambertMaterial({ color: 0x6b5a7a }),
+  rockLight: new THREE.MeshLambertMaterial({ color: 0x8a76a0 }),
+  torii: new THREE.MeshLambertMaterial({ color: 0xd94f2b }),
+  toriiCap: new THREE.MeshLambertMaterial({ color: 0x2d1b3d }),
+  bone: new THREE.MeshLambertMaterial({ color: 0xfff3dc, emissive: 0x554422 }),
+  lantern: new THREE.MeshLambertMaterial({ color: 0xffcf6e, emissive: 0xaa7722 }),
+  wood: new THREE.MeshLambertMaterial({ color: 0x4a3d57 }),
+  blossom: new THREE.MeshLambertMaterial({ color: 0xd97aa6 }),
+  trunk: new THREE.MeshLambertMaterial({ color: 0x3a2535 }),
+  shadow: new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 }),
+};
+
+/* ================= world geometry ================= */
+const LANE_X = 2.2;          // lane spacing
+const PATH_W = LANE_X * 3 + 1.2;
+
+// ground + path (two long strips we keep static; texture of motion comes from objects + dashes)
+{
+  const grass = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), M.grass);
+  grass.rotation.x = -Math.PI / 2;
+  grass.position.y = -0.05;
+  grass.receiveShadow = true;
+  scene.add(grass);
+
+  const path = new THREE.Mesh(new THREE.PlaneGeometry(PATH_W, 300), M.path);
+  path.rotation.x = -Math.PI / 2;
+  path.position.set(0, 0, -100);
+  path.receiveShadow = true;
+  scene.add(path);
+
+  for (const side of [-1, 1]) {
+    const edge = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.18, 300), M.pathEdge);
+    edge.position.set(side * (PATH_W / 2 + 0.15), 0.09, -100);
+    scene.add(edge);
+  }
+}
+
+// scrolling lane dashes
+const dashes = [];
+{
+  const g = new THREE.BoxGeometry(0.14, 0.02, 1.4);
+  const m = new THREE.MeshBasicMaterial({ color: 0xe8c49a, transparent: true, opacity: 0.55 });
+  // separators sit midway between lane centers (lanes at -2.2, 0, 2.2 → seps at ±1.1)
+  for (const sx of [-LANE_X / 2, LANE_X / 2]) {
+    for (let i = 0; i < 26; i++) {
+      const d = new THREE.Mesh(g, m);
+      d.position.set(sx, 0.02, -i * 3.4);
+      scene.add(d);
+      dashes.push(d);
+    }
+  }
+}
+
+/* ================= corgi ================= */
+function buildCorgi() {
+  const root = new THREE.Group();
+  const g = new THREE.Group(); // animated inner group
+  root.add(g);
+
+  const cs = v => { v.castShadow = true; return v; };
+
+  // body loaf — rounded ellipsoid
+  const body = cs(new THREE.Mesh(new THREE.SphereGeometry(1, 18, 14), M.orange));
+  body.scale.set(0.58, 0.47, 1.0);
+  body.position.y = 0.88;
+  g.add(body);
+  // cream underside, peeking out below the orange
+  const belly = cs(new THREE.Mesh(new THREE.SphereGeometry(1, 18, 14), M.cream));
+  belly.scale.set(0.56, 0.42, 0.96);
+  belly.position.y = 0.7;
+  g.add(belly);
+  // chest fluff
+  const chest = cs(new THREE.Mesh(new THREE.SphereGeometry(0.38, 12, 10), M.cream));
+  chest.position.set(0, 0.8, -0.78);
+  g.add(chest);
+  // fluffy butt (faces camera)
+  const butt = cs(new THREE.Mesh(new THREE.SphereGeometry(0.52, 14, 12), M.cream));
+  butt.scale.set(1.0, 0.8, 0.55);
+  butt.position.set(0, 0.85, 0.78);
+  g.add(butt);
+  // tail nub
+  const tail = cs(new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), M.cream));
+  tail.position.set(0, 1.22, 0.82);
+  g.add(tail);
+
+  // head
+  const head = new THREE.Group();
+  head.position.set(0, 1.45, -0.95);
+  g.add(head);
+  const skull = cs(new THREE.Mesh(new THREE.SphereGeometry(0.46, 14, 12), M.orange));
+  head.add(skull);
+  const snout = cs(new THREE.Mesh(new THREE.SphereGeometry(1, 12, 10), M.cream));
+  snout.scale.set(0.2, 0.16, 0.24);
+  snout.position.set(0, -0.1, -0.42);
+  head.add(snout);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), M.nose);
+  nose.position.set(0, -0.06, -0.62);
+  head.add(nose);
+  // hinged lower jaw for gobbling bones
+  const jaw = new THREE.Group();
+  jaw.position.set(0, -0.22, -0.3); // hinge sits under the back of the snout
+  head.add(jaw);
+  const jawMesh = cs(new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), M.cream));
+  jawMesh.scale.set(0.16, 0.07, 0.2);
+  jawMesh.position.set(0, 0, -0.14);
+  jaw.add(jawMesh);
+  const tongue = new THREE.Mesh(new THREE.SphereGeometry(1, 8, 6), M.tongue);
+  tongue.scale.set(0.09, 0.04, 0.14);
+  tongue.position.set(0, 0.04, -0.13);
+  jaw.add(tongue);
+  // cream face blaze
+  const blaze = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), M.cream);
+  blaze.scale.set(0.09, 0.24, 0.06);
+  blaze.position.set(0, 0.18, -0.41);
+  head.add(blaze);
+  // ears
+  for (const side of [-1, 1]) {
+    const ear = cs(new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.46, 4), M.orangeDark));
+    ear.position.set(side * 0.28, 0.5, 0.02);
+    ear.rotation.z = -side * 0.22;
+    ear.rotation.y = Math.PI / 4;
+    head.add(ear);
+    const inner = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.3, 4), M.cream);
+    inner.position.set(side * 0.27, 0.46, 0.06);
+    inner.rotation.z = -side * 0.22;
+    inner.rotation.y = Math.PI / 4;
+    head.add(inner);
+  }
+
+  // stubby legs (pivot groups so they swing from the hip)
+  const legs = [];
+  const legGeo = new THREE.CylinderGeometry(0.13, 0.15, 0.5, 8);
+  const pawGeo = new THREE.SphereGeometry(0.15, 8, 6);
+  const legPos = [[-0.38, -0.6], [0.38, -0.6], [-0.38, 0.62], [0.38, 0.62]];
+  legPos.forEach(([x, z]) => {
+    const hip = new THREE.Group();
+    hip.position.set(x, 0.5, z);
+    const leg = cs(new THREE.Mesh(legGeo, M.orange));
+    leg.position.y = -0.22;
+    hip.add(leg);
+    const paw = cs(new THREE.Mesh(pawGeo, M.cream));
+    paw.position.y = -0.46;
+    hip.add(paw);
+    g.add(hip);
+    legs.push(hip);
+  });
+
+  // blob shadow
+  const blob = new THREE.Mesh(new THREE.CircleGeometry(0.85, 20), M.shadow);
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.01;
+  root.add(blob);
+
+  return { root, g, head, jaw, legs, tail, blob };
+}
+const corgi = buildCorgi();
+scene.add(corgi.root);
+
+/* ---- looney tunes star ring ---- */
+let stars = null;
+function starGeometry(outer, inner) {
+  const shape = new THREE.Shape();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
+    i === 0 ? shape.moveTo(Math.cos(a) * r, Math.sin(a) * r)
+            : shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  return new THREE.ShapeGeometry(shape);
+}
+const starGeo = starGeometry(0.17, 0.07);
+const starMat = new THREE.MeshBasicMaterial({ color: 0xffe066, side: THREE.DoubleSide, fog: false });
+function showStars() {
+  clearStars();
+  stars = new THREE.Group();
+  for (let i = 0; i < 5; i++) stars.add(new THREE.Mesh(starGeo, starMat));
+  scene.add(stars);
+}
+function clearStars() {
+  if (stars) { scene.remove(stars); stars = null; }
+}
+
+/* ================= prefabs ================= */
+function makeRock() {
+  const grp = new THREE.Group();
+  const r1 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.85, 0), M.rock);
+  r1.position.y = 0.7; r1.scale.y = 0.85; r1.castShadow = true;
+  const r2 = new THREE.Mesh(new THREE.DodecahedronGeometry(0.45, 0), M.rockLight);
+  r2.position.set(0.5, 0.42, 0.25); r2.castShadow = true;
+  grp.add(r1, r2);
+  return grp;
+}
+function makeBar() {
+  // low torii beam: sploot under it
+  const grp = new THREE.Group();
+  const beamY = 1.55;
+  for (const side of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, beamY, 8), M.torii);
+    post.position.set(side * 1.0, beamY / 2, 0);
+    post.castShadow = true;
+    grp.add(post);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.22, 0.26), M.torii);
+  beam.position.y = beamY; beam.castShadow = true;
+  grp.add(beam);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.12, 0.34), M.toriiCap);
+  cap.position.y = beamY + 0.17; cap.castShadow = true;
+  grp.add(cap);
+  // rope tassels
+  for (const fx of [-0.6, 0, 0.6]) {
+    const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 6), M.cream);
+    rope.position.set(fx, beamY - 0.3, 0);
+    grp.add(rope);
+  }
+  return grp;
+}
+function makeBone() {
+  const grp = new THREE.Group();
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.55, 8), M.bone);
+  shaft.rotation.z = Math.PI / 2;
+  grp.add(shaft);
+  for (const sx of [-0.28, 0.28]) for (const sy of [-0.1, 0.1]) {
+    const k = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), M.bone);
+    k.position.set(sx, sy, 0);
+    grp.add(k);
+  }
+  return grp;
+}
+function makeGate() {
+  // full-width decorative torii spanning the path
+  const grp = new THREE.Group();
+  const h = 5.2, w = PATH_W + 1.4;
+  for (const side of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, h, 10), M.torii);
+    post.position.set(side * w / 2, h / 2, 0);
+    post.castShadow = true;
+    grp.add(post);
+  }
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(w + 0.7, 0.34, 0.4), M.torii);
+  beam.position.y = h * 0.76;
+  grp.add(beam);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(w + 1.4, 0.26, 0.55), M.toriiCap);
+  cap.position.y = h;
+  grp.add(cap);
+  return grp;
+}
+function makeLantern() {
+  const grp = new THREE.Group();
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.18, 1.1, 0.18), M.wood);
+  post.position.y = 0.55;
+  grp.add(post);
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), M.lantern);
+  box.position.y = 1.35;
+  grp.add(box);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(0.5, 0.3, 4), M.wood);
+  roof.position.y = 1.75; roof.rotation.y = Math.PI / 4;
+  grp.add(roof);
+  return grp;
+}
+function makeTree() {
+  const grp = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.24, 1.6, 7), M.trunk);
+  trunk.position.y = 0.8; trunk.castShadow = true;
+  grp.add(trunk);
+  const puffG = new THREE.SphereGeometry(0.8, 9, 7);
+  [[0, 2.0, 0, 1.1], [-0.6, 1.7, 0.2, 0.75], [0.6, 1.8, -0.2, 0.8]].forEach(([x, y, z, s]) => {
+    const p = new THREE.Mesh(puffG, M.blossom);
+    p.position.set(x, y, z); p.scale.setScalar(s); p.castShadow = true;
+    grp.add(p);
+  });
+  return grp;
+}
+
+/* ================= game state ================= */
+const ST = { MENU: 0, PLAY: 1, DEAD: 2 };
+let state = ST.MENU;
+let speed, dist, treats, best = 0;
+let obstacles = [], bones = [], decos = [];
+let spawnZ, nextDecoZ, nextGateZ, runPhase, shakeT;
+
+const player = { lane: 0, x: 0, y: 0, vy: 0, sliding: 0, dead: false, deadT: 0 };
+let splootAmt = 0; // 0 = running pose, 1 = full sploot
+let chompT = 0;    // gobble animation timer
+
+const SPAWN_AHEAD = -90;
+function reset() {
+  speed = 14; dist = 0; treats = 0;
+  Object.assign(player, { lane: 0, x: 0, y: 0, vy: 0, sliding: 0, dead: false, deadT: 0 });
+  [...obstacles, ...bones, ...decos].forEach(o => scene.remove(o.mesh));
+  obstacles = []; bones = []; decos = [];
+  spawnZ = -30; nextDecoZ = -12; nextGateZ = -20;
+  runPhase = 0; shakeT = 0; splootAmt = 0; chompT = 0;
+  clearStars();
+  corgi.g.rotation.set(0, 0, 0);
+  corgi.g.position.set(0, 0, 0);
+  corgi.g.scale.set(1, 1, 1);
+  corgi.head.rotation.set(0, 0, 0);
+  corgi.jaw.rotation.set(0, 0, 0);
+  corgi.root.visible = true;
+  while (spawnZ > SPAWN_AHEAD) spawnWave();
+  while (nextDecoZ > SPAWN_AHEAD) spawnDeco();
+  while (nextGateZ > SPAWN_AHEAD) spawnGate();
+}
+
+const LANES = [-1, 0, 1];
+const rndLane = () => LANES[(Math.random() * 3) | 0];
+
+function spawnWave() {
+  const difficulty = Math.min(1, dist / 2200);
+  const roll = Math.random();
+  let placed = new Set();
+  function put(lane, type) {
+    if (placed.has(lane)) return;
+    placed.add(lane);
+    const mesh = type === "rock" ? makeRock() : makeBar();
+    mesh.position.set(lane * LANE_X, 0, spawnZ);
+    scene.add(mesh);
+    obstacles.push({ mesh, lane, type, z: spawnZ });
+  }
+  if (roll < 0.3) put(rndLane(), "rock");
+  else if (roll < 0.5) put(rndLane(), "bar");
+  else if (roll < 0.5 + difficulty * 0.35) {
+    const open = rndLane();
+    LANES.filter(l => l !== open).forEach(l => put(l, Math.random() < 0.5 ? "rock" : "bar"));
+  } else { put(rndLane(), "rock"); put(rndLane(), "bar"); }
+
+  if (Math.random() < 0.75) {
+    const free = LANES.filter(l => !placed.has(l));
+    const lane = free.length ? free[(Math.random() * free.length) | 0] : rndLane();
+    const n = 3 + ((Math.random() * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const mesh = makeBone();
+      mesh.position.set(lane * LANE_X, 1.0, spawnZ - 2.2 - i * 2.0);
+      scene.add(mesh);
+      bones.push({ mesh, lane, z: mesh.position.z, got: false, spin: Math.random() * 6 });
+    }
+  }
+  spawnZ -= (10 + Math.random() * 6) * Math.max(0.6, 1 - difficulty * 0.35);
+}
+
+function spawnDeco() {
+  const side = Math.random() < 0.5 ? -1 : 1;
+  const mesh = Math.random() < 0.55 ? makeTree() : makeLantern();
+  mesh.position.set(side * (PATH_W / 2 + 1.6 + Math.random() * 5), 0, nextDecoZ);
+  mesh.rotation.y = Math.random() * Math.PI * 2;
+  scene.add(mesh);
+  decos.push({ mesh, z: nextDecoZ });
+  nextDecoZ -= 4 + Math.random() * 4;
+}
+function spawnGate() {
+  const mesh = makeGate();
+  mesh.position.set(0, 0, nextGateZ);
+  scene.add(mesh);
+  decos.push({ mesh, z: nextGateZ });
+  nextGateZ -= 26 + Math.random() * 14;
+}
+
+/* ================= audio (all synthesized, no files) ================= */
+let actx = null, masterGain = null, musicGain = null, muted = false;
+let musicTimer = null, nextBarTime = 0, barCount = 0;
+
+function initAudio() {
+  if (actx) { if (actx.state === "suspended") actx.resume(); return; }
+  actx = new (window.AudioContext || window.webkitAudioContext)();
+  masterGain = actx.createGain(); masterGain.gain.value = 0.5;
+  masterGain.connect(actx.destination);
+  musicGain = actx.createGain(); musicGain.gain.value = 0.16;
+  musicGain.connect(masterGain);
+}
+
+function tone(freq, freqEnd, dur, type, vol, when, dest) {
+  if (!actx || muted) return;
+  const t = when || actx.currentTime;
+  const o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd, t + dur);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g); g.connect(dest || masterGain);
+  o.start(t); o.stop(t + dur + 0.02);
+}
+
+function whoosh(dur, vol) {
+  if (!actx || muted) return;
+  const t = actx.currentTime;
+  const len = actx.sampleRate * dur;
+  const buf = actx.createBuffer(1, len, actx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  const src = actx.createBufferSource(); src.buffer = buf;
+  const f = actx.createBiquadFilter(); f.type = "bandpass";
+  f.frequency.setValueAtTime(900, t);
+  f.frequency.exponentialRampToValueAtTime(250, t + dur);
+  const g = actx.createGain(); g.gain.value = vol;
+  src.connect(f); f.connect(g); g.connect(masterGain);
+  src.start(t);
+}
+
+const sfx = {
+  jump()   { tone(320, 640, 0.16, "sine", 0.35); },
+  sploot() { whoosh(0.22, 0.5); },
+  bone()   { tone(880, 0, 0.07, "triangle", 0.3); tone(1320, 0, 0.1, "triangle", 0.3, actx && actx.currentTime + 0.07); },
+  bonk()   {
+    tone(170, 55, 0.32, "triangle", 0.6);
+    whoosh(0.15, 0.7);
+    // dizzy descending wah while the stars circle
+    [660, 550, 440, 330].forEach((f, i) => tone(f, f * 0.92, 0.16, "sine", 0.18, actx && actx.currentTime + 0.25 + i * 0.14));
+  },
+};
+
+/* music: A-minor pentatonic koto-ish loop, scheduled with lookahead */
+const NOTE = { A3: 220, C4: 261.6, D4: 293.7, E4: 329.6, G4: 392, A4: 440, C5: 523.3, D5: 587.3, E5: 659.3, G5: 784, A5: 880 };
+const MELODIES = [
+  ["A4", "C5", "D5", "E5", "D5", "C5", "A4", "G4"],
+  ["E5", "D5", "C5", "D5", "A4", null, "G4", "A4"],
+  ["A4", null, "C5", "A4", "D5", "C5", "E5", null],
+  ["G5", "E5", "D5", "C5", "D5", null, "A4", null],
+];
+const BASS = [["A3", "E4"], ["A3", "G4"], ["C4", "G4"], ["D4", "A3"]];
+const BPM = 132, EIGHTH = 60 / BPM / 2, BAR = EIGHTH * 8;
+
+function scheduleBar(t, idx) {
+  const mel = MELODIES[idx % MELODIES.length];
+  const [b1, b2] = BASS[idx % BASS.length];
+  mel.forEach((n, i) => { if (n) tone(NOTE[n], 0, EIGHTH * 1.7, "triangle", 0.5, t + i * EIGHTH, musicGain); });
+  tone(NOTE[b1], 0, BAR * 0.45, "sine", 0.7, t, musicGain);
+  tone(NOTE[b2], 0, BAR * 0.45, "sine", 0.7, t + BAR / 2, musicGain);
+  // tick percussion on offbeats
+  for (let i = 1; i < 8; i += 2) tone(2200, 1400, 0.03, "square", 0.06, t + i * EIGHTH, musicGain);
+}
+
+function startMusic() {
+  if (!actx) return;
+  stopMusic();
+  nextBarTime = actx.currentTime + 0.08;
+  barCount = 0;
+  const tick = () => {
+    while (nextBarTime < actx.currentTime + 1.3) {
+      if (!muted) scheduleBar(nextBarTime, barCount);
+      nextBarTime += BAR; barCount++;
+    }
+  };
+  tick();
+  musicTimer = setInterval(tick, 300);
+}
+function stopMusic() { if (musicTimer) { clearInterval(musicTimer); musicTimer = null; } }
+
+const muteBtn = document.getElementById("muteBtn");
+function toggleMute(e) {
+  e.stopPropagation(); e.preventDefault();
+  muted = !muted;
+  muteBtn.textContent = muted ? "🔇" : "🔊";
+  muteBtn.classList.toggle("muted", muted);
+}
+muteBtn.addEventListener("mousedown", toggleMute);
+muteBtn.addEventListener("touchend", toggleMute);
+
+/* ================= input ================= */
+function tryLane(d) { if (state !== ST.PLAY || player.dead) return; player.lane = THREE.MathUtils.clamp(player.lane + d, -1, 1); }
+function tryJump() { if (state !== ST.PLAY || player.dead) return; if (player.y === 0) { player.vy = 11.5; player.sliding = 0; sfx.jump(); } }
+function trySlide() {
+  if (state !== ST.PLAY || player.dead) return;
+  if (player.y > 0) player.vy = -24;
+  if (player.sliding <= 0) sfx.sploot();
+  player.sliding = 0.62;
+}
+
+let touchStart = null;
+addEventListener("touchstart", e => {
+  touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: true });
+addEventListener("touchend", e => {
+  if (!touchStart) return;
+  const dx = e.changedTouches[0].clientX - touchStart.x;
+  const dy = e.changedTouches[0].clientY - touchStart.y;
+  const adx = Math.abs(dx), ady = Math.abs(dy), TH = 28;
+  if (state !== ST.PLAY) { handleStartTap(); touchStart = null; return; }
+  if (adx < TH && ady < TH) tryJump();
+  else if (adx > ady) tryLane(dx > 0 ? 1 : -1);
+  else if (dy < 0) tryJump();
+  else trySlide();
+  touchStart = null;
+}, { passive: true });
+addEventListener("mousedown", () => { if (state !== ST.PLAY) handleStartTap(); else tryJump(); });
+addEventListener("keydown", e => {
+  if (state !== ST.PLAY && (e.code === "Space" || e.code === "Enter")) { handleStartTap(); return; }
+  switch (e.code) {
+    case "ArrowLeft": case "KeyA": tryLane(-1); break;
+    case "ArrowRight": case "KeyD": tryLane(1); break;
+    case "ArrowUp": case "KeyW": case "Space": tryJump(); break;
+    case "ArrowDown": case "KeyS": trySlide(); break;
+  }
+});
+
+let canRestartAt = 0;
+function handleStartTap() {
+  if (state === ST.DEAD && performance.now() < canRestartAt) return;
+  initAudio();
+  reset();
+  state = ST.PLAY;
+  startMusic();
+  overlay.classList.add("hidden");
+  hud.classList.remove("hidden");
+}
+
+const overlay = document.getElementById("overlay");
+const menuContent = document.getElementById("menuContent");
+const hud = document.getElementById("hud");
+const scoreNum = document.getElementById("scoreNum");
+const treatNum = document.getElementById("treatNum");
+
+/* ================= update ================= */
+function update(dt) {
+  // idle menu spin
+  if (state === ST.MENU) {
+    runPhase += dt * 7;
+    animateCorgi(dt, true);
+    return;
+  }
+  if (state === ST.DEAD) return;
+
+  if (!player.dead) {
+    speed += dt * 0.18;
+    dist += speed * dt * 1.6;
+    runPhase += dt * (7 + speed * 0.28);
+  } else {
+    player.deadT += dt;
+    if (player.deadT > 1.8) { showGameOver(); }
+  }
+
+  player.x += (player.lane - player.x) * Math.min(1, dt * 11);
+  if (player.y > 0 || player.vy > 0) {
+    player.vy -= dt * 34;
+    player.y += player.vy * dt;
+    if (player.y <= 0) { player.y = 0; player.vy = 0; }
+  }
+  if (player.sliding > 0) player.sliding -= dt;
+
+  const dz = player.dead ? 0 : speed * dt;
+
+  const moveList = (arr) => {
+    for (const o of arr) { o.z += dz; o.mesh.position.z = o.z; }
+  };
+  moveList(obstacles); moveList(bones); moveList(decos);
+  spawnZ += dz; nextDecoZ += dz; nextGateZ += dz;
+
+  obstacles = obstacles.filter(o => (o.z < 12) || (scene.remove(o.mesh), false));
+  bones = bones.filter(b => (!b.got && b.z < 12) || (scene.remove(b.mesh), false));
+  decos = decos.filter(d => (d.z < 14) || (scene.remove(d.mesh), false));
+
+  while (spawnZ > SPAWN_AHEAD) spawnWave();
+  while (nextDecoZ > SPAWN_AHEAD) spawnDeco();
+  while (nextGateZ > SPAWN_AHEAD) spawnGate();
+
+  // dashes scroll
+  for (const d of dashes) {
+    d.position.z += dz;
+    if (d.position.z > 6) d.position.z -= 26 * 3.4;
+  }
+
+  // bones spin
+  for (const b of bones) {
+    b.mesh.rotation.y += dt * 3;
+    b.mesh.position.y = 1.0 + Math.sin(performance.now() / 220 + b.spin) * 0.12;
+  }
+
+  // collisions (player at z = 0)
+  if (!player.dead) {
+    for (const o of obstacles) {
+      if (Math.abs(o.z) > 0.9) continue;
+      if (Math.abs(player.x * LANE_X - o.lane * LANE_X) > LANE_X * 0.55) continue;
+      const cleared = (o.type === "rock" && player.y > 0.9) ||
+                      (o.type === "bar" && player.sliding > 0 && player.y < 0.2);
+      if (!cleared) { killPlayer(); break; }
+    }
+    for (const b of bones) {
+      if (b.got || Math.abs(b.z) > 1.1) continue;
+      if (Math.abs(player.x - b.lane) < 0.5 && player.y < 1.4) {
+        b.got = true; treats++;
+        chompT = 0.4;
+        sfx.bone();
+        scene.remove(b.mesh);
+      }
+    }
+  }
+
+  if (shakeT > 0) shakeT -= dt;
+  animateCorgi(dt, false);
+
+  // camera follows lane slightly, with shake
+  const shx = shakeT > 0 ? (Math.random() - 0.5) * 0.5 * shakeT : 0;
+  const shy = shakeT > 0 ? (Math.random() - 0.5) * 0.5 * shakeT : 0;
+  camera.position.x += (player.x * LANE_X * 0.45 + shx - camera.position.x) * Math.min(1, dt * 6);
+  camera.position.y = 4.6 + shy;
+  camera.lookAt(player.x * LANE_X * 0.6, 1.2, -6);
+
+  scoreNum.textContent = totalScore();
+  treatNum.textContent = "🦴 " + treats;
+}
+
+function animateCorgi(dt, idle) {
+  const r = corgi.root, g = corgi.g;
+  r.position.x = player.x * LANE_X;
+  r.position.z = 0;
+
+  const slide = player.sliding > 0 && player.y === 0;
+  const grounded = player.y === 0;
+
+  if (player.dead) {
+    // bonk physics: pop up, gravity, two damped bounces — never below ground
+    player.deadVy -= dt * 30;
+    player.deadY = (player.deadY || 0) + player.deadVy * dt;
+    if (player.deadY <= 0) {
+      player.deadY = 0;
+      player.deadVy = Math.abs(player.deadVy) > 2.4 ? -player.deadVy * 0.45 : 0;
+    }
+    r.position.y = player.deadY;
+
+    // backflip pivoting on the body's center, landing belly-up
+    const flip = (k => k * k * (3 - 2 * k))(Math.min(1, player.deadT / 0.55));
+    const theta = -flip * Math.PI;
+    g.rotation.x = theta;
+    g.rotation.z = 0;
+    // keep the body center above ground while it rotates around it
+    g.position.y = (0.88 + (0.52 - 0.88) * flip) - 0.88 * Math.cos(theta);
+    g.scale.x += (1 - g.scale.x) * Math.min(1, dt * 10);
+    g.scale.y += (1 - g.scale.y) * Math.min(1, dt * 10);
+    g.scale.z += (1 - g.scale.z) * Math.min(1, dt * 10);
+
+    // legs stiff in the air with a dazed twitch
+    const tw = Math.sin(performance.now() / 90) * 0.07;
+    corgi.legs[0].rotation.x = -0.3 + tw; corgi.legs[1].rotation.x = -0.3 - tw;
+    corgi.legs[2].rotation.x = 0.35 + tw; corgi.legs[3].rotation.x = 0.35 - tw;
+    corgi.legs[0].rotation.z = -0.25; corgi.legs[1].rotation.z = 0.25;
+    corgi.legs[2].rotation.z = -0.35; corgi.legs[3].rotation.z = 0.35;
+    corgi.head.rotation.x = 0;
+    corgi.jaw.rotation.x = -0.55; // dazed, tongue out
+
+    // shadow stays on the ground, shrinking with bounce height
+    const dsh = Math.max(0.35, 1 - player.deadY * 0.25);
+    corgi.blob.scale.setScalar(dsh);
+    corgi.blob.position.y = 0.02 - r.position.y;
+    corgi.blob.material.opacity = 0.3 * dsh;
+
+    // ring of stars circling over the dazed corgi
+    if (stars) {
+      const tNow = performance.now() / 1000;
+      stars.position.set(r.position.x, r.position.y + g.position.y + 1.5, 0.3);
+      stars.children.forEach((st, i) => {
+        const a = tNow * 3.4 + (i / stars.children.length) * Math.PI * 2;
+        st.position.set(Math.cos(a) * 0.75, Math.sin(tNow * 5 + i) * 0.07, Math.sin(a) * 0.75);
+        st.quaternion.copy(camera.quaternion); // always face the camera
+        st.scale.setScalar(1 + Math.sin(tNow * 8 + i * 2) * 0.18);
+      });
+    }
+    return;
+  }
+
+  const bob = grounded && !slide ? Math.abs(Math.sin(runPhase)) * 0.12 : 0;
+  r.position.y = player.y + bob;
+
+  // sploot blend — belly drops to the ground instead of just squashing
+  splootAmt += ((slide ? 1 : 0) - splootAmt) * Math.min(1, dt * 13);
+  const mix = (a, b) => a + (b - a) * splootAmt;
+
+  g.scale.y = mix(1, 0.82);
+  g.scale.z = mix(1, 1.08);
+  g.position.y = mix(0, -0.34);   // belly meets the floor
+
+  // lean into the air
+  const targetRX = !grounded ? -0.35 : 0;
+  g.rotation.x += (targetRX - g.rotation.x) * Math.min(1, dt * 10);
+  g.rotation.z = (player.lane - player.x) * -0.5; // bank into lane changes
+
+  // legs: run cycle blended into the sploot pose
+  const swing = grounded && !slide ? Math.sin(runPhase) * 0.9 : (grounded ? 0.1 : 0.5);
+  // front legs stretch forward, flat along the ground
+  corgi.legs[0].rotation.x = mix(swing, -1.45);
+  corgi.legs[1].rotation.x = mix(-swing, -1.45);
+  corgi.legs[0].rotation.z = mix(0, -0.22);
+  corgi.legs[1].rotation.z = mix(0, 0.22);
+  // rear legs kick straight back and splay outward (the signature move)
+  corgi.legs[2].rotation.x = mix(-swing * 0.85, 1.52);
+  corgi.legs[3].rotation.x = mix(swing * 0.85, 1.52);
+  corgi.legs[2].rotation.z = mix(0, -0.6);
+  corgi.legs[3].rotation.z = mix(0, 0.6);
+  // chin stays low but the head tips up to see ahead
+  corgi.head.rotation.x = mix(0, -0.22);
+
+  // gobble: two quick chomps after grabbing a bone
+  if (chompT > 0) chompT -= dt;
+  const chomp = chompT > 0 ? Math.abs(Math.sin((1 - chompT / 0.4) * Math.PI * 2)) : 0;
+  corgi.jaw.rotation.x = -0.7 * chomp;
+
+  // tail wiggle + head bob
+  corgi.tail.position.x = Math.sin(runPhase * 1.8) * 0.12;
+  corgi.head.rotation.z = Math.sin(runPhase * 0.9) * 0.06;
+
+  // blob shadow shrinks with height
+  const sh = Math.max(0.25, 1 - player.y * 0.22);
+  corgi.blob.scale.setScalar(sh);
+  corgi.blob.position.y = 0.02 - r.position.y; // stay on ground
+  corgi.blob.material.opacity = 0.3 * sh;
+}
+
+const BONE_PTS = 50;
+const totalScore = () => Math.floor(dist) + treats * BONE_PTS;
+
+function killPlayer() {
+  player.dead = true; player.deadT = 0; shakeT = 0.5;
+  player.deadVy = 6.5; player.deadY = 0.01;
+  splootAmt = 0;
+  showStars();
+  stopMusic();
+  sfx.bonk();
+  if (navigator.vibrate) navigator.vibrate(120);
+}
+
+function showGameOver() {
+  if (state === ST.DEAD) return;
+  state = ST.DEAD;
+  const score = totalScore();
+  const isBest = score > best;
+  best = Math.max(best, score);
+  menuContent.innerHTML = `
+    <div class="dead-msg">The corgi has been bonked. 🐾</div>
+    <div class="final-score">${score}</div>
+    <div class="best">${Math.floor(dist)} distance + 🦴 ${treats} × ${BONE_PTS}</div>
+    <div class="best">${isBest ? "★ new best ★" : "best " + best}</div>
+    <div class="tap-start">Run again</div>`;
+  overlay.classList.remove("hidden");
+  hud.classList.add("hidden");
+  canRestartAt = performance.now() + 500;
+}
+
+/* ================= loop ================= */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+reset();
+requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
