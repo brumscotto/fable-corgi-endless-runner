@@ -586,8 +586,14 @@ function spawnGate() {
 let actx = null, masterGain = null, musicGain = null, muted = false;
 let musicTimer = null, nextBarTime = 0, barCount = 0;
 
+function resumeAudio() {
+  if (actx && actx.state !== "running") actx.resume();
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden) resumeAudio(); });
+window.addEventListener("focus", resumeAudio);
+
 function initAudio() {
-  if (actx) { if (actx.state === "suspended") actx.resume(); return; }
+  if (actx) { resumeAudio(); return; }
   actx = new (window.AudioContext || window.webkitAudioContext)();
   masterGain = actx.createGain(); masterGain.gain.value = 0.5;
   masterGain.connect(actx.destination);
@@ -662,6 +668,8 @@ function startMusic() {
   nextBarTime = actx.currentTime + 0.08;
   barCount = 0;
   const tick = () => {
+    // if the tab slept, the clock fell behind — skip ahead instead of blasting a backlog of past notes
+    if (nextBarTime < actx.currentTime) nextBarTime = actx.currentTime + 0.05;
     while (nextBarTime < actx.currentTime + 1.3) {
       if (!muted) scheduleBar(nextBarTime, barCount);
       nextBarTime += BAR; barCount++;
@@ -699,6 +707,7 @@ addEventListener("touchstart", e => {
   touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
 }, { passive: true });
 addEventListener("touchend", e => {
+  resumeAudio();
   if (!touchStart) return;
   const dx = e.changedTouches[0].clientX - touchStart.x;
   const dy = e.changedTouches[0].clientY - touchStart.y;
@@ -710,8 +719,9 @@ addEventListener("touchend", e => {
   else trySlide();
   touchStart = null;
 }, { passive: true });
-addEventListener("mousedown", () => { if (state !== ST.PLAY) handleStartTap(); else tryJump(); });
+addEventListener("mousedown", () => { resumeAudio(); if (state !== ST.PLAY) handleStartTap(); else tryJump(); });
 addEventListener("keydown", e => {
+  resumeAudio();
   if (state !== ST.PLAY && (e.code === "Space" || e.code === "Enter")) { handleStartTap(); return; }
   switch (e.code) {
     case "ArrowLeft": case "KeyA": tryLane(-1); break;
